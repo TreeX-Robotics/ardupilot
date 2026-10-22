@@ -83,3 +83,6 @@ after a CRC-verified upload. No armed motor or flight validation was performed.
 Fresh migration validation is recorded in the PR. Historical design, numerical
 measurements, deployment/rollback records and limitations are retained in
 [the Z note](guided-z-position.md) and [the heading note](guided-heading-rate.md).
+
+Fresh migration builds, measurements, test results and audit are recorded in
+[the migration validation note](guided-migration-validation.md).
