@@ -211,7 +211,7 @@ void ModeGuided::wp_control_run()
     pos_control->update_z_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), get_heading_command());
 }
 
 // initialise position controller
@@ -634,6 +634,12 @@ bool ModeGuided::stabilizing_vel_xy() const
     return !option_is_enabled(Option::DoNotStabilizeVelocityXY);
 }
 
+// returns true if altitude should be controlled when velocity and/or acceleration control is active
+bool ModeGuided::stabilizing_pos_z() const
+{
+    return !option_is_enabled(Option::DoNotStabilizePositionZ);
+}
+
 // returns true if GUIDED_OPTIONS param specifies waypoint navigation should be used for position control (allow path planning to be used but updates must be slower)
 bool ModeGuided::use_wpnav_for_position_control() const
 {
@@ -742,7 +748,7 @@ void ModeGuided::pos_control_run()
     pos_control->update_z_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), get_heading_command());
 }
 
 // velaccel_control_run - runs the guided velocity controller
@@ -780,6 +786,9 @@ void ModeGuided::accel_control_run()
             pos_control->stop_pos_xy_stabilisation();
         }
         pos_control->input_accel_z(guided_accel_target_cmss.z);
+        if (!stabilizing_pos_z()) {
+            pos_control->stop_pos_z_stabilisation();
+        }
     }
 
     // call velocity controller which includes z axis controller
@@ -787,7 +796,7 @@ void ModeGuided::accel_control_run()
     pos_control->update_z_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), get_heading_command());
 }
 
 // velaccel_control_run - runs the guided velocity and acceleration controller
@@ -837,12 +846,16 @@ void ModeGuided::velaccel_control_run()
     }
     pos_control->input_vel_accel_z(guided_vel_target_cms.z, guided_accel_target_cmss.z, false);
 
+    if (!stabilizing_pos_z() && !do_avoid) {
+        pos_control->stop_pos_z_stabilisation();
+    }
+
     // call velocity controller which includes z axis controller
     pos_control->update_xy_controller();
     pos_control->update_z_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), get_heading_command());
 }
 
 // pause_control_run - runs the guided mode pause controller
@@ -923,15 +936,21 @@ void ModeGuided::posvelaccel_control_run()
     }
 
     float pz = guided_pos_target_cm.z;
+    if (!stabilizing_pos_z()) {
+        pz = pos_control->get_pos_desired_cm().z;
+    }
     pos_control->input_pos_vel_accel_z(pz, guided_vel_target_cms.z, guided_accel_target_cmss.z, false);
     guided_pos_target_cm.z = pz;
+    if (!stabilizing_pos_z()) {
+        pos_control->stop_pos_z_stabilisation();
+    }
 
     // run position controllers
     pos_control->update_xy_controller();
     pos_control->update_z_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), get_heading_command());
 }
 
 // angle_control_run - runs the guided angle controller
@@ -1002,6 +1021,18 @@ void ModeGuided::angle_control_run()
         pos_control->set_pos_target_z_from_climb_rate_cm(climb_rate_cms);
         pos_control->update_z_controller();
     }
+}
+
+// Apply the Guided heading policy only to an explicit heading-rate command.
+AC_AttitudeControl::HeadingCommand ModeGuided::get_heading_command()
+{
+    auto heading = auto_yaw.get_heading();
+    if (auto_yaw.mode() == AutoYaw::Mode::RATE &&
+        heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only &&
+        option_is_enabled(Option::DoNotStabilizeHeading)) {
+        heading.heading_mode = AC_AttitudeControl::HeadingMode::Rate_Only_No_Heading_Hold;
+    }
+    return heading;
 }
 
 // helper function to set yaw state and targets

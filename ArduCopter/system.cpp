@@ -202,6 +202,11 @@ void Copter::init_ardupilot()
     vel_variance_filt.set_cutoff_frequency(g2.fs_ekf_filt_hz);
     hgt_variance_filt.set_cutoff_frequency(g2.fs_ekf_filt_hz);
 
+    // During startup GCS sends STATUSTEXT immediately, before normal streaming.
+#if MODE_GUIDED_ENABLED
+    mode_guided.report_loaded_options();
+#endif
+
     // flag that initialisation has completed
     ap.initialised = true;
 }

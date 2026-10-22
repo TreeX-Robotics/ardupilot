@@ -1102,6 +1102,9 @@ public:
     // returns true if GUIDED_OPTIONS param suggests SET_ATTITUDE_TARGET's "thrust" field should be interpreted as thrust instead of climb rate
     bool set_attitude_target_provides_thrust() const;
     bool stabilizing_pos_xy() const;
+    bool stabilizing_pos_z() const;
+    void report_loaded_options();
+    AC_AttitudeControl::HeadingCommand get_heading_command();
     bool stabilizing_vel_xy() const;
     bool use_wpnav_for_position_control() const;
 
@@ -1169,7 +1172,9 @@ private:
         DoNotStabilizePositionXY = (1U << 4),
         DoNotStabilizeVelocityXY = (1U << 5),
         WPNavUsedForPosControl = (1U << 6),
-        AllowWeatherVaning = (1U << 7)
+        AllowWeatherVaning = (1U << 7),
+        DoNotStabilizePositionZ = (1U << 8),
+        DoNotStabilizeHeading = (1U << 9)
     };
 
     // returns true if the Guided-mode-option is set (see GUID_OPTIONS)
