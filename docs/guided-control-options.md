@@ -59,7 +59,7 @@ independent Euler angles during tilt. This is not an elastic contact model.
 Initialize the needed submodules and keep output outside the checkout:
 
 ```sh
-git submodule update --init --recursive modules/waf modules/mavlink modules/gtest modules/ChibiOS modules/DroneCAN modules/CrashDebug modules/CrashCatcher modules/lwip
+git submodule update --init --recursive modules/waf modules/mavlink modules/gtest modules/ChibiOS modules/DroneCAN modules/CrashDebug modules/lwip
 ./waf configure --board CubeOrangePlus-bdshot --out /absolute/external/build --no-submodule-update --extra-hwdef=libraries/AP_HAL_ChibiOS/hwdef/CubeOrangePlus-bdshot/size_optimized.dat
 ./waf copter -j6
 ```
