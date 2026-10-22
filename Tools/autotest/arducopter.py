@@ -5251,6 +5251,383 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GuidedNoPositionZ(self):
+        """Disable Guided altitude correction without disabling vertical velocity control."""
+        no_position_z = 1 << 8
+        self.set_parameters({"FS_GCS_ENABLE": 0, "DISARM_DELAY": 0})
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, 10)
+
+        def send_target(control, position, vz=0, az=0):
+            mask = MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE | MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE
+            if control != "position_velocity":
+                mask |= MAV_POS_TARGET_TYPE_MASK.POS_IGNORE
+            if control == "acceleration":
+                mask |= MAV_POS_TARGET_TYPE_MASK.VEL_IGNORE
+            else:
+                mask |= MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE
+            self.mav.mav.set_position_target_local_ned_send(
+                0, 1, 1, mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
+                position.x, position.y, position.z, 0, 0, vz, 0, 0, az, 0, 0)
+
+        def stream_target(control, position, duration, vz=0, az=0):
+            start = self.get_sim_time()
+            samples = []
+            while self.get_sim_time_cached() - start < duration:
+                send_target(control, position, vz=vz, az=az)
+                samples.append(self.assert_receive_message("LOCAL_POSITION_NED"))
+            return samples
+
+        for control in ("velocity", "acceleration", "position_velocity"):
+            for options in (0, no_position_z):
+                self.start_subtest("%s GUID_OPTIONS=%u" % (control, options))
+                self.set_parameter("GUID_OPTIONS", options)
+                self.takeoff(10, mode="GUIDED")
+                position = self.assert_receive_message("LOCAL_POSITION_NED")
+                initial_z = position.z
+                stream_target("velocity", position, 3)
+
+                if control == "position_velocity":
+                    # A supplied altitude must not leak into velocity shaping when bit 8 is set.
+                    position.z -= 3
+                else:
+                    stream_target(control, position, 3)
+                    self.set_parameter("SIM_SHOVE_Z", -6)
+                    self.set_parameter("SIM_SHOVE_TIME", 1500)
+
+                start = self.get_sim_time()
+                samples = stream_target(control, position, 12)
+                end = self.get_sim_time()
+                if control == "position_velocity":
+                    displacement = abs(samples[-1].z - initial_z)
+                    self.progress("Combined-command vertical displacement=%f m" % displacement)
+                    if options and displacement > 0.3:
+                        raise NotAchievedException("Supplied altitude was not ignored: %f m" % displacement)
+                    if not options and displacement < 2:
+                        raise NotAchievedException("Default supplied altitude was not followed: %f m" % displacement)
+                if options:
+                    if abs(samples[-1].vz) > 0.3:
+                        raise NotAchievedException("Vertical velocity not stabilized: %s" % samples[-1])
+
+                    if control == "velocity":
+                        # Exercise external position-to-velocity control on all axes.
+                        self.set_parameter("GUID_OPTIONS", no_position_z | (1 << 4))
+                        for vz in (-0.7, 0.7):
+                            samples = stream_target(control, position, 5, vz=vz)
+                            if abs(samples[-1].vz - vz) > 0.25:
+                                raise NotAchievedException("Vertical velocity target %f not tracked: %s" %
+                                                           (vz, samples[-1]))
+                        stream_target(control, position, 3)
+
+                    if control == "acceleration":
+                        stream_target(control, position, 3, az=-0.2)
+                        samples = stream_target(control, position, 2)
+                        if samples[-1].vz > -0.25:
+                            raise NotAchievedException("Acceleration did not retain desired velocity: %s" % samples[-1])
+                        stream_target("velocity", position, 4)
+                        stream_target(control, position, 3)
+
+                    # Timeout must still brake; acceleration timeout also restores altitude hold.
+                    samples = stream_target(control, position, 3, vz=-0.7,
+                                            az=-0.2 if control == "acceleration" else 0)
+                    if samples[-1].vz > -0.25:
+                        raise NotAchievedException("Vehicle was not moving before timeout: %s" % samples[-1])
+                    self.delay_sim_time(5)
+                    sample = self.assert_receive_message("LOCAL_POSITION_NED")
+                    if abs(sample.vz) > 0.3:
+                        raise NotAchievedException("Vertical timeout did not stop: %s" % sample)
+
+                    # Position-only control must still reach an altitude with this option enabled.
+                    self.fly_guided_move_local(0, 0, 10)
+                self.do_RTL()
+
+                # Each flight has its own log. Check the actual controller targets.
+                log = self.dfreader_for_current_onboard_log()
+                errors = []
+                while True:
+                    message = log.recv_match(type="PSCD")
+                    if message is None:
+                        break
+                    if start + 1 < message.TimeUS * 1e-6 < end:
+                        errors.append(abs(message.TPD - message.PD))
+                if len(errors) < 20:
+                    raise NotAchievedException("Missing PSCD samples for %s GUID_OPTIONS=%u" % (control, options))
+                peak_error = max(errors)
+                self.progress("%s GUID_OPTIONS=%u peak altitude error=%f m" % (control, options, peak_error))
+                if options and peak_error > 0.1:
+                    raise NotAchievedException("Altitude correction remained enabled: %f m" % peak_error)
+                if not options and control != "position_velocity" and peak_error < 0.2:
+                    raise NotAchievedException("Default altitude correction was not exercised: %f m" % peak_error)
+
+    def GuidedOptionsStartupReport(self):
+        """Report the loaded Guided mask and enabled flags once on boot, disarmed."""
+        names = {
+            0: "AllowArmingFromTX",
+            2: "IgnorePilotYaw",
+            3: "SetAttitudeTarget_ThrustAsThrust",
+            4: "DoNotStabilizePositionXY",
+            5: "DoNotStabilizeVelocityXY",
+            6: "WPNavUsedForPosControl",
+            7: "AllowWeatherVaning",
+            8: "DoNotStabilizePositionZ",
+            9: "DoNotStabilizeHeading",
+        }
+        self.context_collect("STATUSTEXT")
+        for options in (0, 256, 512, 784, 1021, 514):
+            self.start_subtest("Startup GUID_OPTIONS=%u" % options)
+            self.set_parameter("GUID_OPTIONS", options)
+            self.context_clear_collection("STATUSTEXT")
+            self.reboot_sitl()
+            self.delay_sim_time(2)
+            if self.armed():
+                raise NotAchievedException("Startup report test must remain disarmed")
+            messages = [m for m in self.context_collection("STATUSTEXT")
+                        if m.text.startswith(("GUID_OPTIONS", "GUID bit"))]
+            expected = ["GUID_OPTIONS loaded=%u" % options]
+            if options == 0:
+                expected.append("GUID_OPTIONS: no flags enabled")
+            else:
+                expected += ["GUID bit%u: %s" % (bit, names.get(bit, "unknown"))
+                             for bit in range(32) if options & (1 << bit)]
+            if [m.text for m in messages] != expected:
+                raise NotAchievedException("Startup report mismatch: expected %s, got %s" %
+                                           (expected, [m.text for m in messages]))
+            if any(m.severity != mavutil.mavlink.MAV_SEVERITY_INFO for m in messages):
+                raise NotAchievedException("Startup report must use INFO severity")
+            if any(m.chunk_seq != 0 for m in messages):
+                raise NotAchievedException("Startup report line split across STATUSTEXT chunks")
+
+    def GuidedNoHeadingHold(self):
+        """Physically block yaw, then distinguish rate control from heading recovery."""
+        yaw_rate_i = self.get_parameter("ATC_RAT_YAW_I")
+        self.set_parameter("LOG_BITMASK", int(self.get_parameter("LOG_BITMASK")) | (1 << 12))
+        self.set_parameters({"FS_GCS_ENABLE": 0, "DISARM_DELAY": 0})
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, 10)
+
+        def angle_error(a, b):
+            return abs((a - b + 180) % 360 - 180)
+
+        def stream(duration, rate=0, yaw=None, vx=0):
+            start = self.get_sim_time()
+            samples = []
+            while self.get_sim_time_cached() - start < duration:
+                mask = MAV_POS_TARGET_TYPE_MASK.POS_IGNORE | MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE
+                mask |= MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE if yaw is None else MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE
+                self.mav.mav.set_position_target_local_ned_send(
+                    0, 1, 1, mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
+                    0, 0, 0, vx, 0, 0, 0, 0, 0,
+                    0 if yaw is None else math.radians(yaw), math.radians(rate))
+                samples.append(self.assert_receive_message("ATTITUDE"))
+            return samples
+
+        # I=0 comparisons isolate heading memory; the final case checks the real rate I.
+        for feedforward, options, rate_i in ((1, 0, 0), (1, 512, 0),
+                                             (0, 0, 0), (0, 512, 0),
+                                             (1, 512, yaw_rate_i)):
+            self.start_subtest("blocked yaw FF=%u GUID_OPTIONS=%u rate_I=%f" % (feedforward, options, rate_i))
+            self.set_parameters({"GUID_OPTIONS": options, "ATC_RATE_FF_ENAB": feedforward,
+                                 "ATC_RAT_YAW_I": yaw_rate_i})
+            self.takeoff(10, mode="GUIDED")
+            # ArduPilot requires positive rate I for arming; isolate it only in flight.
+            self.set_parameter("ATC_RAT_YAW_I", rate_i)
+            stream(2)
+            self.set_parameter("SIM_BLOCK_MASK", 1 << 5)
+            blocked_start = self.get_sim_time()
+            stream(3, rate=20)
+            stream(2)
+            blocked_end = self.get_sim_time()
+            self.set_parameter("SIM_BLOCK_MASK", 0)
+            stream(6)
+            release_end = self.get_sim_time()
+
+            # Restore normal rate I for tracking: P-only control has steady-state drag error.
+            self.set_parameter("ATC_RAT_YAW_I", yaw_rate_i)
+            samples = stream(60, rate=20)
+            actual_rate = math.degrees(sum(m.yawspeed for m in samples[-20:]) / len(samples[-20:]))
+            self.progress("FF=%u options=%u free yaw rate=%f deg/s" % (feedforward, options, actual_rate))
+            if abs(actual_rate - 20) > 1:
+                raise NotAchievedException("Yaw rate command lost: %f" % actual_rate)
+            stream(3)
+
+            if options:
+                # Normal thrust control must work while tilted with heading hold disabled.
+                tilted = stream(5, vx=1)
+                if max(math.degrees(math.hypot(m.roll, m.pitch)) for m in tilted) < 2:
+                    raise NotAchievedException("Tilted thrust-vector control was not exercised")
+                velocity = self.assert_receive_message("LOCAL_POSITION_NED")
+                if abs(velocity.vx - 1) > 0.3:
+                    raise NotAchievedException("Thrust-vector control changed: %s" % velocity)
+                stream(3)
+                # Explicit angle control and switching the option retain their normal behavior.
+                target = (math.degrees(self.assert_receive_message("ATTITUDE").yaw) + 60) % 360
+                samples = stream(8, yaw=target)
+                if angle_error(math.degrees(samples[-1].yaw), target) > 5:
+                    raise NotAchievedException("Absolute heading was suppressed")
+                self.set_parameter("GUID_OPTIONS", 0)
+                stream(2, rate=20)
+                self.set_parameter("GUID_OPTIONS", options)
+                stream(2, rate=20)
+                stream(3)
+                stream(3, rate=20)
+                self.delay_sim_time(5)
+                attitude = self.assert_receive_message("ATTITUDE")
+                if abs(math.degrees(attitude.yawspeed)) > 5:
+                    raise NotAchievedException("Yaw timeout did not brake")
+            self.do_RTL()
+
+            log = self.dfreader_for_current_onboard_log()
+            errors, blocked_yaw, released_yaw, integral_samples, rate_demands = [], [], [], [], []
+            while True:
+                m = log.recv_match(type=["ATT", "SIM", "PIDY", "RATE"])
+                if m is None:
+                    break
+                time = m.TimeUS * 1e-6
+                if m.get_type() == "RATE" and blocked_start + 0.5 < time < blocked_start + 2.5:
+                    rate_demands.append(m.YDes)
+                if blocked_start + 0.5 < time < blocked_end:
+                    if m.get_type() == "ATT":
+                        errors.append(angle_error(m.DesYaw, m.Yaw))
+                    elif m.get_type() == "SIM":
+                        blocked_yaw.append(m.Yaw)
+                    elif m.get_type() == "PIDY":
+                        integral_samples.append(m.I)
+                if blocked_end < time < release_end and m.get_type() == "SIM":
+                    released_yaw.append(m.Yaw)
+            if min(len(errors), len(blocked_yaw), len(released_yaw)) < 10:
+                raise NotAchievedException("Missing blocked-yaw log samples")
+            peak_error = max(errors)
+            blocked_motion = max(angle_error(yaw, blocked_yaw[0]) for yaw in blocked_yaw)
+            release_motion = max(angle_error(yaw, blocked_yaw[-1]) for yaw in released_yaw)
+            self.progress("BlockedYaw FF=%u options=%u rate_I=%f target_error=%f blocked_motion=%f release_motion=%f deg" %
+                          (feedforward, options, rate_i, peak_error, blocked_motion, release_motion))
+            if options:
+                if len(rate_demands) < 10 or abs(sum(rate_demands) / len(rate_demands) - 20) > 1:
+                    raise NotAchievedException("Shaped yaw-rate demand did not reach rate PID")
+            if blocked_motion > 0.2:
+                raise NotAchievedException("SITL body-Z lock did not block yaw")
+            if options and (peak_error > 1 or (rate_i == 0 and release_motion > 3)):
+                raise NotAchievedException("Stored heading correction remained active")
+            if not options and (peak_error < 10 or release_motion < 10):
+                raise NotAchievedException("Default heading recovery not exercised")
+
+            if rate_i != 0:
+                if not integral_samples or max(abs(i) for i in integral_samples) < 0.001:
+                    raise NotAchievedException("Yaw rate integral was not retained during blockage")
+                self.progress("BlockedYaw retained rate integral peak=%f" % max(abs(i) for i in integral_samples))
+
+    def SITLBlockedAxes(self):
+        """Body-axis locks reject physical torques; all six locks can be combined."""
+        self.set_parameters({"FS_GCS_ENABLE": 0, "DISARM_DELAY": 0})
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_SIMSTATE, 10)
+        self.takeoff(10, mode="GUIDED")
+        mask = (MAV_POS_TARGET_TYPE_MASK.POS_IGNORE | MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE |
+                MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE | MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE)
+        for block_mask in (1 << 3, 1 << 4, 1 << 5, 63):
+            self.start_subtest("SITL blocked mask=%u" % block_mask)
+            self.set_parameter("SIM_BLOCK_MASK", block_mask)
+            self.set_parameters({"SIM_TWIST_X": 10, "SIM_TWIST_Y": 10, "SIM_TWIST_Z": 10})
+            # Apply torque only on blocked rotation axes to avoid flipping the vehicle.
+            for axis, name in enumerate(("X", "Y", "Z")):
+                if not block_mask & (1 << (axis + 3)):
+                    self.set_parameter("SIM_TWIST_" + name, 0)
+            self.set_parameter("SIM_TWIST_TIME", 1500)
+            if block_mask == 63:
+                self.set_parameters({"SIM_SHOVE_X": 10, "SIM_SHOVE_Y": 10, "SIM_SHOVE_Z": 10,
+                                     "SIM_SHOVE_TIME": 1500})
+            start = self.get_sim_time()
+            samples = []
+            while self.get_sim_time_cached() - start < 3:
+                self.mav.mav.set_position_target_local_ned_send(
+                    0, 1, 1, mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+                m = self.assert_receive_message("SIMSTATE")
+                if self.get_sim_time_cached() - start > 0.5:
+                    samples.append(m)
+                    for axis, rate in enumerate((m.xgyro, m.ygyro, m.zgyro)):
+                        if block_mask & (1 << (axis + 3)) and abs(rate) > 1e-6:
+                            raise NotAchievedException("Blocked body rate was nonzero: %s" % m)
+            if block_mask == 63:
+                if any((m.lat, m.lng) != (samples[0].lat, samples[0].lng) for m in samples):
+                    raise NotAchievedException("Combined translation constraints moved")
+            self.set_parameters({"SIM_TWIST_X": 0, "SIM_TWIST_Y": 0, "SIM_TWIST_Z": 0,
+                                 "SIM_SHOVE_X": 0, "SIM_SHOVE_Y": 0, "SIM_SHOVE_Z": 0,
+                                 "SIM_BLOCK_MASK": 0})
+        self.do_RTL()
+
+    def GuidedBlockedVelocity(self):
+        """Compare X/Y/Z velocity commands while the corresponding physics axis is blocked."""
+        self.set_parameters({"FS_GCS_ENABLE": 0, "DISARM_DELAY": 0})
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, 10)
+
+        def stream(axis, velocity, duration):
+            start = self.get_sim_time()
+            samples = []
+            v = [0, 0, 0]
+            v[axis] = velocity
+            mask = (MAV_POS_TARGET_TYPE_MASK.POS_IGNORE | MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE |
+                    MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE | MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE)
+            while self.get_sim_time_cached() - start < duration:
+                self.mav.mav.set_position_target_local_ned_send(
+                    0, 1, 1, mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
+                    0, 0, 0, *v, 0, 0, 0, 0, 0)
+                samples.append(self.assert_receive_message("LOCAL_POSITION_NED"))
+            return samples
+
+        for axis, name in enumerate(("X", "Y", "Z")):
+            for options in (0, (1 << 8) if axis == 2 else (1 << 4)):
+                self.start_subtest("blocked %s GUID_OPTIONS=%u" % (name, options))
+                self.set_parameter("GUID_OPTIONS", options)
+                self.takeoff(10, mode="GUIDED")
+                stream(axis, 0, 3)
+                self.set_parameter("SIM_BLOCK_MASK", 1 << axis)
+                blocked_start = self.get_sim_time()
+                stream(axis, -0.6 if axis == 2 else 0.6, 3)
+                stream(axis, 0, 3)
+                blocked_end = self.get_sim_time()
+                self.set_parameter("SIM_BLOCK_MASK", 0)
+                samples = stream(axis, 0, 8)
+                release_end = self.get_sim_time()
+                final_velocity = (samples[-1].vx, samples[-1].vy, samples[-1].vz)[axis]
+                if abs(final_velocity) > 0.3:
+                    raise NotAchievedException("Released velocity failed to settle: %s" % samples[-1])
+                samples = stream(axis, -0.6 if axis == 2 else 0.6, 5)
+                final_velocity = (samples[-1].vx, samples[-1].vy, samples[-1].vz)[axis]
+                if abs(final_velocity - (-0.6 if axis == 2 else 0.6)) > 0.25:
+                    raise NotAchievedException("Free velocity command not tracked: %s" % samples[-1])
+                stream(axis, 0, 3)
+                self.do_RTL()
+
+                log = self.dfreader_for_current_onboard_log()
+                errors, blocked_position, released_position = [], [], []
+                reference_latitude = None
+                while True:
+                    m = log.recv_match(type=["PSC" + ("N", "E", "D")[axis], "SIM"])
+                    if m is None:
+                        break
+                    time = m.TimeUS * 1e-6
+                    if m.get_type() == "SIM" and reference_latitude is None:
+                        reference_latitude = m.Lat
+                    if blocked_start + 0.5 < time < blocked_end:
+                        if m.get_type() != "SIM":
+                            suffix = ("N", "E", "D")[axis]
+                            errors.append(abs(getattr(m, "TP" + suffix) - getattr(m, "P" + suffix)))
+                        else:
+                            blocked_position.append((m.Lat * 111320, m.Lng * 111320 * math.cos(math.radians(reference_latitude)), m.Alt)[axis])
+                    if blocked_end < time < release_end and m.get_type() == "SIM":
+                        released_position.append((m.Lat * 111320, m.Lng * 111320 * math.cos(math.radians(reference_latitude)), m.Alt)[axis])
+                if min(len(errors), len(blocked_position), len(released_position)) < 10:
+                    raise NotAchievedException("Missing blocked-velocity log samples")
+                peak_error = max(errors)
+                blocked_motion = max(abs(p - blocked_position[0]) for p in blocked_position)
+                release_motion = max(abs(p - blocked_position[-1]) for p in released_position)
+                self.progress("BlockedVelocity axis=%s options=%u target_error=%f blocked_motion=%f release_motion=%f m" %
+                              (name, options, peak_error, blocked_motion, release_motion))
+                if blocked_motion > 0.05:
+                    raise NotAchievedException("SITL translation axis not blocked")
+                if options and peak_error > 0.1:
+                    raise NotAchievedException("Position correction remained active")
+                if not options and peak_error < 0.2:
+                    raise NotAchievedException("Default position integration not exercised")
+
     def TestGripperMission(self):
         '''Test Gripper mission items'''
         num_wp = self.load_mission("copter-gripper-mission.txt")
@@ -12392,6 +12769,11 @@ RTL_ALT 111
             self.FarOrigin,
             self.GuidedForceArm,
             self.GuidedWeatherVane,
+            self.GuidedNoPositionZ,
+            self.GuidedOptionsStartupReport,
+            self.GuidedNoHeadingHold,
+            self.GuidedBlockedVelocity,
+            self.SITLBlockedAxes,
             self.Clamp,
             self.GripperReleaseOnThrustLoss,
             self.REQUIRE_LOCATION_FOR_ARMING,
