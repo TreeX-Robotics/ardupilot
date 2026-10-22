@@ -314,7 +314,7 @@ protected:
     uint64_t get_wall_time_us(void) const;
 
     // update attitude and relative position
-    void update_dynamics(const Vector3f &rot_accel);
+    void update_dynamics(const Vector3f &rot_accel, uint8_t block_mask = 0);
 
     // update wind vector
     void update_wind(const struct sitl_input &input);

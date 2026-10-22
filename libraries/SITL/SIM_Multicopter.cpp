@@ -77,7 +77,7 @@ void MultiCopter::update(const struct sitl_input &input)
 
     battery.set_current(battery_current);
 
-    update_dynamics(rot_accel);
+    update_dynamics(rot_accel, sitl->block_mask.get());
     update_external_payload(input);
 
     // update lat/lon/altitude

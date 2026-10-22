@@ -702,6 +702,13 @@ const AP_Param::GroupInfo SIM::var_info3[] = {
     // @Bitmask: 0:MAVLink,3:SageTechMXS
     AP_GROUPINFO("ADSB_TYPES",    52, SIM,  adsb_types, 1),
 
+    // @Param: BLOCK_MASK
+    // @DisplayName: Multicopter blocked axes
+    // @Description: Ideal constraints holding selected axes at their current position. Translation axes are NED; rotational axes are body rates. Only applies to the multicopter model.
+    // @Bitmask: 0:North translation,1:East translation,2:Down translation,3:Body X rotation,4:Body Y rotation,5:Body Z rotation
+    // @User: Advanced
+    AP_GROUPINFO("BLOCK_MASK", 55, SIM, block_mask, 0),
+
 #ifdef WITH_SITL_OSD
     // @Param: OSD_COLUMNS
     // @DisplayName: Simulated OSD number of text columns

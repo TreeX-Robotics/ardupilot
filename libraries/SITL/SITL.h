@@ -568,6 +568,9 @@ public:
     // clamp simulation - servo channel starting at offset 1 (usually ailerons)
     AP_Int8 clamp_ch;
 
+    // Multicopter ideal constraints: NED translation then body rotation.
+    AP_Int8 block_mask;
+
 #if AP_SIM_INS_FILE_ENABLED
     enum INSFileMode {
         INS_FILE_NONE = 0,

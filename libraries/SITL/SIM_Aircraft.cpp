@@ -678,7 +678,7 @@ void Aircraft::update_model(const struct sitl_input &input)
 /*
   update the simulation attitude and relative position
  */
-void Aircraft::update_dynamics(const Vector3f &rot_accel)
+void Aircraft::update_dynamics(const Vector3f &rot_accel, uint8_t block_mask)
 {
     WITH_SEMAPHORE(pose_sem);
 
@@ -696,6 +696,11 @@ void Aircraft::update_dynamics(const Vector3f &rot_accel)
 
     // update rotational rates in body frame
     gyro += rot_accel * delta_time;
+    for (uint8_t axis = 0; axis < 3; axis++) {
+        if (block_mask & (1U << (axis + 3))) {
+            gyro[axis] = 0.0f;
+        }
+    }
 
     gyro.x = constrain_float(gyro.x, -radians(2000.0f), radians(2000.0f));
     gyro.y = constrain_float(gyro.y, -radians(2000.0f), radians(2000.0f));
@@ -718,6 +723,15 @@ void Aircraft::update_dynamics(const Vector3f &rot_accel)
     // to zero. This effectively adds the force of the ground on the aircraft
     if (on_ground() && accel_earth.z > 0) {
         accel_earth.z = 0;
+    }
+
+    // Ideal reaction forces stop selected NED axes without moving their position.
+    // Apply before generating specific force so sensors and physics agree.
+    for (uint8_t axis = 0; axis < 3; axis++) {
+        if (block_mask & (1U << axis)) {
+            accel_earth[axis] = 0.0f;
+            velocity_ef[axis] = 0.0f;
+        }
     }
 
     // work out acceleration as seen by the accelerometers. It sees the kinematic
