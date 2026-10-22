@@ -503,6 +503,10 @@ protected:
     // Enable/Disable body frame rate feed forward
     AP_Int8             _rate_bf_ff_enabled;
 
+    // Selected for one heading-command dispatch; never disables the rate PID.
+    bool _heading_hold_enabled = true;
+    void remove_heading_error();
+
     // Enable/Disable angle boost
     AP_Int8             _angle_boost_enabled;
 
@@ -652,7 +656,8 @@ public:
     enum class HeadingMode {
         Angle_Only,
         Angle_And_Rate,
-        Rate_Only
+        Rate_Only,
+        Rate_Only_No_Heading_Hold
     };
     struct HeadingCommand {
         float yaw_angle_cd;

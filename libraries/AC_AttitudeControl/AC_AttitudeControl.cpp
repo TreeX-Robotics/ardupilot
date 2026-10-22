@@ -351,6 +351,9 @@ void AC_AttitudeControl::input_euler_angle_roll_pitch_euler_rate_yaw(float euler
 
     // update attitude target
     update_attitude_target();
+    if (!_heading_hold_enabled) {
+        remove_heading_error();
+    }
 
     // calculate the attitude target euler angles
     _attitude_target.to_euler(_euler_angle_target);
@@ -377,6 +380,15 @@ void AC_AttitudeControl::input_euler_angle_roll_pitch_euler_rate_yaw(float euler
         // Limit the angular velocity
         ang_vel_limit(_ang_vel_target, radians(_ang_vel_roll_max), radians(_ang_vel_pitch_max), radians(_ang_vel_yaw_max));
         // Convert body-frame angular velocity into euler angle derivative of desired attitude
+        ang_vel_to_euler_rate(_attitude_target, _ang_vel_target, _euler_rate_target);
+    } else if (!_heading_hold_enabled) {
+        _attitude_target.from_euler(euler_roll_angle, euler_pitch_angle, _euler_angle_target.z);
+        _euler_rate_target.x = 0.0f;
+        _euler_rate_target.y = 0.0f;
+        const Vector3f euler_accel = euler_accel_limit(_attitude_target, Vector3f{get_accel_roll_max_radss(), get_accel_pitch_max_radss(), get_accel_yaw_max_radss()});
+        _euler_rate_target.z = input_shaping_ang_vel(_euler_rate_target.z, euler_yaw_rate, euler_accel.z, _dt, _rate_y_tc);
+        euler_rate_to_ang_vel(_attitude_target, _euler_rate_target, _ang_vel_target);
+        ang_vel_limit(_ang_vel_target, radians(_ang_vel_roll_max), radians(_ang_vel_pitch_max), radians(_ang_vel_yaw_max));
         ang_vel_to_euler_rate(_attitude_target, _ang_vel_target, _euler_rate_target);
     } else {
         // When feedforward is not enabled, the target euler angle is input into the target and the feedforward rate is zeroed.
@@ -710,6 +722,9 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading(const Vector3f& thrust
 
     // update attitude target
     update_attitude_target();
+    if (!_heading_hold_enabled) {
+        remove_heading_error();
+    }
 
     // calculate the attitude target euler angles
     _attitude_target.to_euler(_euler_angle_target);
@@ -735,6 +750,15 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading(const Vector3f& thrust
         _ang_vel_target.z = input_shaping_ang_vel(_ang_vel_target.z, heading_rate, get_accel_yaw_max_radss(), _dt, _rate_y_tc);
 
         // Limit the angular velocity
+        ang_vel_limit(_ang_vel_target, radians(_ang_vel_roll_max), radians(_ang_vel_pitch_max), radians(_ang_vel_yaw_max));
+    } else if (!_heading_hold_enabled) {
+        // Without angle feedback, the shaped rate must reach the rate PID even
+        // when attitude feedforward is disabled. Preserve non-FF thrust control.
+        _attitude_target = _attitude_target * thrust_vec_correction_quat;
+        _ang_vel_target.x = 0.0f;
+        _ang_vel_target.y = 0.0f;
+        _ang_vel_target.z = input_shaping_ang_vel(_ang_vel_target.z, heading_rate,
+                                                get_accel_yaw_max_radss(), _dt, _rate_y_tc);
         ang_vel_limit(_ang_vel_target, radians(_ang_vel_roll_max), radians(_ang_vel_pitch_max), radians(_ang_vel_yaw_max));
     } else {
         Quaternion yaw_quat;
@@ -807,7 +831,9 @@ void AC_AttitudeControl::input_thrust_vector_heading(const Vector3f& thrust_vect
 // Command a thrust vector and heading rate
 void AC_AttitudeControl::input_thrust_vector_heading(const Vector3f& thrust_vector, HeadingCommand heading)
 {
+    _heading_hold_enabled = heading.heading_mode != HeadingMode::Rate_Only_No_Heading_Hold;
     switch (heading.heading_mode) {
+    case HeadingMode::Rate_Only_No_Heading_Hold:
     case HeadingMode::Rate_Only:
         input_thrust_vector_rate_heading(thrust_vector, heading.yaw_rate_cds);
         break;
@@ -818,6 +844,7 @@ void AC_AttitudeControl::input_thrust_vector_heading(const Vector3f& thrust_vect
         input_thrust_vector_heading(thrust_vector, heading.yaw_angle_cd, heading.yaw_rate_cds);
         break;
     }
+    _heading_hold_enabled = true;
 }
 
 Quaternion AC_AttitudeControl::attitude_from_thrust_vector(Vector3f thrust_vector, float heading_angle) const
@@ -851,6 +878,21 @@ Quaternion AC_AttitudeControl::attitude_from_thrust_vector(Vector3f thrust_vecto
     return thrust_vec_quat*yaw_quat;
 }
 
+// Retain thrust-vector error while removing the residual heading rotation.
+void AC_AttitudeControl::remove_heading_error()
+{
+    Quaternion attitude_body;
+    _ahrs.get_quat_body_to_ned(attitude_body);
+    Quaternion thrust_vector_correction;
+    Vector3f attitude_error;
+    float thrust_angle, thrust_error_angle;
+    thrust_vector_rotation_angles(_attitude_target, attitude_body, thrust_vector_correction,
+                                 attitude_error, thrust_angle, thrust_error_angle);
+    _attitude_target = attitude_body * thrust_vector_correction;
+    _attitude_target.normalize();
+    _attitude_target.to_euler(_euler_angle_target);
+}
+
 // Calculates the body frame angular velocities to follow the target attitude
 void AC_AttitudeControl::update_attitude_target()
 {
@@ -864,6 +906,9 @@ void AC_AttitudeControl::update_attitude_target()
 // Calculates the body frame angular velocities to follow the target attitude
 void AC_AttitudeControl::attitude_controller_run_quat()
 {
+    if (!_heading_hold_enabled) {
+        remove_heading_error();
+    }
     // This represents a quaternion rotation in NED frame to the body
     Quaternion attitude_body;
     _ahrs.get_quat_body_to_ned(attitude_body);

@@ -857,6 +857,13 @@ void AC_PosControl::init_z_controller()
     _last_update_z_ticks = AP::scheduler().ticks32();
 }
 
+/// stop_pos_z_stabilisation - remove altitude corrections while retaining velocity and acceleration control
+void AC_PosControl::stop_pos_z_stabilisation()
+{
+    _pos_target.z = _inav.get_position_z_up_cm();
+    _pos_desired.z = _pos_target.z - (_pos_offset.z + _pos_terrain);
+}
+
 /// input_accel_z - calculate a jerk limited path from the current position, velocity and acceleration to an input acceleration.
 ///     The function takes the current position, velocity, and acceleration and calculates the required jerk limited adjustment to the acceleration for the next time dt.
 void AC_PosControl::input_accel_z(float accel)
