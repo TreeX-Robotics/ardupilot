@@ -1,0 +1,2 @@
+# Extra hwdef for full-feature builds that exceed flash with -O2.
+env OPTIMIZE -Os
