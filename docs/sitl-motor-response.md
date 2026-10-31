@@ -43,7 +43,31 @@ Preserve noise assumptions separately from the RPM mapping.
 
 ## Validation status
 
-Source patch reviewed; compilation and runtime validation are pending.
+Source implementation at `34154ca2f30958b34662f4250088f86e37228870` compiled
+successfully on the sanctioned server through `robowire build --build-host
+"$USER@treex-dev-tlv" --component ardupilot-sitl-motor-response`.
+The Docker build uses native `./waf configure --board sitl
+--no-submodule-update` and `./waf copter`.
+
+Desktop image digest:
+`sha256:a6f552b5a9ac2230cb2b7072bc1c225bc69a7acef0d8511870d85f4b47ce6696`.
+Raw ESC RPM motor-step validation measured tau 0.060000059 s for requested
+0.06 s. The 10–90% rise measured 0.132078 s versus 0.131833 s expected.
+Zero-response, stopped startup/decay and negative-value initialization
+rejection checks passed. Native panic can remain alive for diagnostics;
+rejection is the named panic with no initialized MAVLink listener.
+
+Original-PID tau 0/0.04 flight cases completed their sequence but oscillated
+and are rejected. Tau 0.06/0.10 were bounded with zero sampled output
+limiting; tau 0.06 also passed the independent command sequence. This is
+model sensitivity, not validation of real-flight dynamics. A roll-P x1.5
+probe, I/D unchanged, oscillated and was rejected on both sequences.
+The stable model still tracks too ideally compared with real-flight data.
+No aircraft PID recommendation follows. Full old-binary bitwise parity,
+a dedicated clock-zero runtime test, and independent motor-force step
+measurement remain untested.
+
+Remaining validation:
 Check zero-delay regression, a step reaching 63.21% after one tau, finite slew
 plus lag, stopped startup, matching force/RPM state, and invalid JSON values.
 Then compare fixed-PID rate/attitude/velocity response and limiting across
