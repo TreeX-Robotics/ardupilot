@@ -62,7 +62,11 @@ and are rejected. Tau 0.06/0.10 were bounded with zero sampled output
 limiting; tau 0.06 also passed the independent command sequence. This is
 model sensitivity, not validation of real-flight dynamics. A roll-P x1.5
 probe, I/D unchanged, oscillated and was rejected on both sequences.
-The stable model still tracks too ideally compared with real-flight data.
+The gentle velocity profile tracks too ideally compared with real-flight
+data. A corrected 50 Hz replay of recorded body-rate demands retains an
+excess 8 Hz roll component: 7–9 Hz band RMS 3.063 deg/s in SITL versus
+0.116–0.274 deg/s across the three real IMUs on a common anti-aliased grid.
+Public Guided input shaping and initial state/disturbances remain different.
 No aircraft PID recommendation follows. Full old-binary bitwise parity,
 a dedicated clock-zero runtime test, and independent motor-force step
 measurement remain untested.
