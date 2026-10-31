@@ -47,6 +47,7 @@ void Motor::calculate_forces(const struct sitl_input &input,
 
     // apply slew limiter to command
     uint64_t now_us = AP_HAL::micros64();
+    const uint64_t previous_calc_us = last_calc_us;
     if (last_calc_us != 0 && slew_max > 0) {
         float dt = (now_us - last_calc_us)*1.0e-6;
         float slew_max_change = slew_max * dt;
@@ -54,6 +55,19 @@ void Motor::calculate_forces(const struct sitl_input &input,
     }
     last_calc_us = now_us;
     last_command = command;
+
+    if (motor_response_time_constant_s > 0.0f) {
+        if (have_actual_command_sample) {
+            const float dt = (now_us - previous_calc_us)*1.0e-6;
+            const float alpha = 1.0f - expf(-dt / motor_response_time_constant_s);
+            actual_command += alpha * (command - actual_command);
+        }
+        command = actual_command;
+    } else {
+        // Keep the existing command arithmetic unchanged when response is disabled.
+        actual_command = command;
+    }
+    have_actual_command_sample = true;
 
     // velocity of motor through air
     Vector3f motor_vel = velocity_air_bf;

@@ -115,8 +115,14 @@ public:
         slew_max = _slew_max;
     }
 
+    // Optional first-order response; zero preserves the unfiltered command.
+    void set_motor_response_time_constant_s(float time_constant_s) {
+        motor_response_time_constant_s = time_constant_s;
+    }
+
+    // The same actual command drives thrust and simulated motor RPM.
     float get_command(void) const {
-        return last_command;
+        return actual_command;
     }
 
     // calculate thrust of motor
@@ -138,8 +144,11 @@ private:
     float momentum_drag_coefficient;
     float diagonal_size;
 
-    float last_command;
-    uint64_t last_calc_us;
+    float last_command = 0.0f; // previous slew-limited demand
+    uint64_t last_calc_us = 0;
+    float actual_command = 0.0f;
+    float motor_response_time_constant_s = 0.0f;
+    bool have_actual_command_sample = false;
 
     Vector3f position;
     Vector3f thrust_vector;

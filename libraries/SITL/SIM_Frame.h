@@ -122,6 +122,9 @@ private:
         // maximum slew rate of motors
         float slew_max = 150;
 
+        // optional first-order motor response after the command slew limiter
+        float motor_response_time_constant_s = 0.0f;
+
         // rotor disc area in m**2 for 4 x 0.35m dia rotors
         // Note that coaxial rotors count as one rotor only when calculating effective disc area
         float disc_area = 0.385;

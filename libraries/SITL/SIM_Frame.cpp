@@ -381,6 +381,7 @@ void Frame::load_frame_params(const char *model_json)
         FRAME_VAR(spin_min),
         FRAME_VAR(spin_max),
         FRAME_VAR(slew_max),
+        FRAME_VAR(motor_response_time_constant_s),
         FRAME_VAR(disc_area),
         FRAME_VAR(mdrag_coef),
         {"moment_inertia", &model.moment_of_inertia, VarType::VECTOR3F},
@@ -461,6 +462,9 @@ void Frame::init(const char *frame_str, Battery *_battery)
     if (colon != nullptr && slen > 5 && strcmp(&frame_str[slen-5], ".json") == 0) {
         load_frame_params(colon+1);
     }
+    if (!isfinite(model.motor_response_time_constant_s) || model.motor_response_time_constant_s < 0.0f) {
+        AP_HAL::panic("motor_response_time_constant_s must be finite and non-negative");
+    }
     mass = model.mass;
 
     const float drag_force = model.mass * GRAVITY_MSS * tanf(radians(model.refAngle));
@@ -505,6 +509,7 @@ void Frame::init(const char *frame_str, Battery *_battery)
                                model.diagonal_size, power_factor, model.maxVoltage, effective_prop_area, velocity_max,
                                model.motor_pos[i], model.motor_thrust_vec[i], model.yaw_factor[i], true_prop_area,
                                model.mdrag_coef);
+        motors[i].set_motor_response_time_constant_s(model.motor_response_time_constant_s);
     }
 
     if (is_zero(model.moment_of_inertia.x) || is_zero(model.moment_of_inertia.y) || is_zero(model.moment_of_inertia.z)) {
